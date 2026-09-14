@@ -1,0 +1,60 @@
+cluster:
+  scope: pgcluster
+  patroni_config_path: /etc/patroni/patroni.yml
+  nodes:
+    - name: pg1
+      ip: 172.21.1.90
+    - name: pg2
+      ip: 172.21.1.91
+    - name: pg3
+      ip: 172.21.5.90
+    - name: pg4
+      ip: 172.21.5.91
+  watcher_ip: 172.21.5.89
+  vip: 172.21.1.95          # leave blank / remove if HAProxy+keepalived isn't in use
+  vip_port: 5000
+  patroni_rest_port: 8008
+  patroni_api_user: patroni
+  patroni_api_password: "CHANGE_ME"
+  pg_port: 5432
+  etcd_client_port: 2379
+
+ssh:
+  user: root
+  key_path: ~/.ssh/id_rsa
+  port: 22
+
+database:
+  dbname: postgres
+  user: postgres
+  password: "CHANGE_ME"
+  sslmode: null              # e.g. "require" if you enabled TLS
+
+sla:
+  rto_seconds: 30            # max acceptable time-to-new-leader
+  rpo_seconds: 5             # max acceptable data-loss window
+  rejoin_timeout_seconds: 300  # max time for a node to rejoin as a running replica after
+                                # restart/failback - cross-site (DC<->DR) replication catch-up
+                                # is inherently slower than same-site; tune to your actual WAN
+                                # link speed and data volume, not just RTO
+  replication_lag_warn_mb: 16
+  replication_lag_crit_mb: 64
+  connectivity_latency_warn_ms: 50
+
+tests:
+  # Destructive tests (unplanned_failover, disaster_recovery) stop real
+  # services on real nodes. BOTH this flag AND the --confirm-destructive CLI
+  # flag must be set for them to run - belt and suspenders on purpose.
+  enable_destructive: false
+  performance:
+    write_iterations: 200
+    read_iterations: 200
+  data_integrity:
+    marker_rows_planned: 100
+    marker_rows_unplanned: 100
+  security:
+    # hosts allowed to see the stats/API ports - anything else that CAN
+    # reach them is flagged. Leave empty to just report exposure, no fail.
+    expected_admin_source: null
+
+output_dir: ./results

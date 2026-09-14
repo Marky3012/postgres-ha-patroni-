@@ -1,0 +1,19 @@
+# Secrets / environment-specific config (keep only the .example.yaml templates)
+ha-validate/config.yaml
+
+# ha-validate output
+ha-validate/results/
+ha-validate/__pycache__/
+ha-validate/**/__pycache__/
+*.pyc
+
+# pg-ha-setup runtime artifacts
+pg-ha-setup/pg-ha-offline-pkgs/
+pg-ha-setup/pg-ha-offline-pkgs.tar.gz
+pg-ha-setup/install-logs-*/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
