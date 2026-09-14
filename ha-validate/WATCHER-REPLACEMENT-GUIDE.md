@@ -1,10 +1,18 @@
 # Replacing / Relocating the Watcher Node
 
+> This guide uses 4 PG nodes + 1 watcher (5-member quorum) as the running
+> example. `deploy.sh` now supports any PG node count and only asks for
+> watcher(s) when that count is EVEN, adding just enough to make the etcd
+> quorum ODD again - the procedure below is identical either way, just
+> substitute your own node counts and repeat per-node steps N times instead
+> of 4.
+
 The watcher is an **etcd-only** member — no PostgreSQL, no Patroni. Its whole
-job is to make the etcd cluster 5 members instead of 4, so a straight 2-2
-network split among the 4 PG nodes can never happen (5 always breaks 3-2).
-See the architecture discussion in the main chat history for why this
-matters; this guide is only the **how**.
+job is to make the etcd cluster's total member count ODD, so a straight
+network split among the PG nodes can never end in an exact tie (an odd total
+always breaks unevenly, e.g. 5 members breaks 3-2). See the architecture
+discussion in the main chat history for why this matters; this guide is only
+the **how**.
 
 **Do NOT** just edit `/etc/default/etcd`'s `ETCD_INITIAL_CLUSTER` string on
 the surviving nodes and restart them. Once etcd has bootstrapped, that file

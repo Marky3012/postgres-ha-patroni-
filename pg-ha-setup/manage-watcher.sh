@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run this AS ROOT ON one of the 4 healthy PG nodes (it uses the local
+# Run this AS ROOT ON one of the healthy PG nodes (it uses the local
 # etcdctl + /etc/patroni/patroni.yml already on that node). Needs SSH key
 # access (same as deploy.sh) to the other 3 PG nodes and to the watcher
 # IP (new or existing). Needs pg-ha-setup/remote-install.sh in the same
@@ -7,14 +7,14 @@
 #
 # Flow:
 #   1. Detect the current watcher (if any) from `etcd member list`, by
-#      elimination against the 4 PG node IPs you provide.
+#      elimination against the PG node IPs you provide.
 #   2. Health-check it. If healthy, nothing to do (unless you want to force
 #      a relocation).
 #   3. If missing or unhealthy, ask for a NEW watcher IP and perform the
 #      real etcdctl member add/remove flow (see WATCHER-REPLACEMENT-GUIDE.md
 #      for why this can't just be a config-file edit).
 #   4. If the watcher IP changed, update etcd3.hosts in patroni.yml on all
-#      4 PG nodes and roll-restart Patroni one node at a time.
+#      PG nodes and roll-restart Patroni one node at a time.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,7 +30,7 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 if ! command -v etcdctl >/dev/null 2>&1; then
-  err "etcdctl not found - this must run on a node that already has etcd installed (one of the 4 PG nodes)."
+  err "etcdctl not found - this must run on a node that already has etcd installed (one of the PG nodes)."
   exit 1
 fi
 if [[ ! -f "$SCRIPT_DIR/remote-install.sh" ]]; then
@@ -51,24 +51,29 @@ remote() { local ip="$1"; shift; ssh "${SSH_OPTS[@]}" "${SSH_USER}@${ip}" "$@"; 
 push()   { scp -q "${SSH_OPTS[@]}" "$2" "${SSH_USER}@${1}:$3"; }
 
 echo
-echo "Enter the 4 PG node IPs (used to tell them apart from the watcher):"
-read -rp "  PG node 1 IP: " PG1
-read -rp "  PG node 2 IP: " PG2
-read -rp "  PG node 3 IP: " PG3
-read -rp "  PG node 4 IP: " PG4
-PG_IPS=("$PG1" "$PG2" "$PG3" "$PG4")
+read -rp "How many PG nodes does this cluster have? " N_PG
+until [[ "$N_PG" =~ ^[0-9]+$ ]] && (( N_PG >= 2 )); do
+  echo "Enter a whole number, 2 or more."; read -rp "How many PG nodes does this cluster have? " N_PG
+done
+echo "Enter the $N_PG PG node IPs (used to tell them apart from the watcher(s)):"
+PG_IPS=()
+for (( _i=1; _i<=N_PG; _i++ )); do
+  read -rp "  PG node $_i IP: " _pgip
+  PG_IPS+=("$_pgip")
+done
 
 # ---------------------------------------------------------------------------
-# 1. Detect current watcher by elimination against the 4 known PG IPs
+# 1. Detect current watcher by elimination against the known PG IPs
 # ---------------------------------------------------------------------------
 log "Reading etcd member list..."
 MEMBERS_JSON="$(etcdctl --endpoints="$LOCAL_ETCD" member list -w json)"
 
-read -r CURRENT_WATCHER_ID CURRENT_WATCHER_IP <<< "$(python3 - "$MEMBERS_JSON" "${PG_IPS[@]}" <<'PYEOF'
+# List ALL non-PG members - deploy.sh's even-quorum flow can create more
+# than one watcher, so "the odd one out" is no longer necessarily unique.
+mapfile -t WATCHER_CANDIDATES < <(python3 - "$MEMBERS_JSON" "${PG_IPS[@]}" <<'PYEOF'
 import sys, json
 data = json.loads(sys.argv[1])
 pg_ips = set(sys.argv[2:])
-watcher = None
 for m in data.get("members", []):
     urls = m.get("clientURLs") or []
     ip = None
@@ -76,22 +81,33 @@ for m in data.get("members", []):
         ip = u.split("//")[-1].split(":")[0]
         break
     if ip and ip not in pg_ips:
-        watcher = (m.get("ID"), ip)
-        break
-if watcher:
-    # etcd member IDs are large ints; etcdctl member remove wants hex
-    print(format(watcher[0], "x"), watcher[1])
-else:
-    print("NONE NONE")
+        # etcd member IDs are large ints; etcdctl member remove wants hex
+        print(f"{format(m.get('ID'), 'x')} {ip}")
 PYEOF
-)"
+)
+
+CURRENT_WATCHER_ID="NONE"; CURRENT_WATCHER_IP="NONE"
+if [[ ${#WATCHER_CANDIDATES[@]} -eq 1 ]]; then
+  read -r CURRENT_WATCHER_ID CURRENT_WATCHER_IP <<< "${WATCHER_CANDIDATES[0]}"
+elif [[ ${#WATCHER_CANDIDATES[@]} -gt 1 ]]; then
+  warn "Found ${#WATCHER_CANDIDATES[@]} watcher nodes (this cluster uses more than one). Which one are you managing?"
+  n=0
+  for cand in "${WATCHER_CANDIDATES[@]}"; do
+    n=$((n+1)); echo "  $n) ${cand#* }"
+  done
+  read -rp "  Pick a number [1-${#WATCHER_CANDIDATES[@]}]: " PICK
+  until [[ "$PICK" =~ ^[0-9]+$ ]] && (( PICK >= 1 && PICK <= ${#WATCHER_CANDIDATES[@]} )); do
+    read -rp "  Pick a number [1-${#WATCHER_CANDIDATES[@]}]: " PICK
+  done
+  read -r CURRENT_WATCHER_ID CURRENT_WATCHER_IP <<< "${WATCHER_CANDIDATES[$((PICK-1))]}"
+fi
 
 NEED_NEW_WATCHER="false"
 OLD_WATCHER_ID=""
 OLD_WATCHER_IP=""
 
 if [[ "$CURRENT_WATCHER_IP" == "NONE" ]]; then
-  warn "No watcher member found in etcd (only the 4 PG nodes are present)."
+  warn "No watcher member found in etcd (only the PG nodes are present)."
   NEED_NEW_WATCHER="true"
 else
   log "Current watcher detected: $CURRENT_WATCHER_IP (member id: $CURRENT_WATCHER_ID)"
@@ -195,10 +211,10 @@ log "Cluster membership now:"
 etcdctl --endpoints="$LOCAL_ETCD" member list
 
 # ---------------------------------------------------------------------------
-# 4. Point Patroni at the new watcher IP on all 4 PG nodes, rolling restart
+# 4. Point Patroni at the new watcher IP on all PG nodes, rolling restart
 # ---------------------------------------------------------------------------
 if [[ "$NEW_WATCHER_IP" != "$OLD_WATCHER_IP" ]]; then
-  log "Updating etcd3.hosts in patroni.yml on all 4 PG nodes (rolling restart)..."
+  log "Updating etcd3.hosts in patroni.yml on all ${#PG_IPS[@]} PG nodes (rolling restart)..."
   NEW_ETCD_HOSTS=""
   for ip in "${PG_IPS[@]}" "$NEW_WATCHER_IP"; do
     NEW_ETCD_HOSTS+="${ip}:2379,"
@@ -213,7 +229,7 @@ if [[ "$NEW_WATCHER_IP" != "$OLD_WATCHER_IP" ]]; then
     remote "$ip" "sudo -u postgres patronictl -c ${PATRONI_CFG} list" || warn "Could not confirm health on $ip yet, check manually before moving to the next node"
     read -rp "  $ip restarted - looks healthy above? Press enter to continue to the next node (Ctrl+C to stop here): "
   done
-  log "All 4 PG nodes updated and restarted."
+  log "All ${#PG_IPS[@]} PG nodes updated and restarted."
 else
   log "Watcher IP unchanged - no Patroni config update needed."
 fi
@@ -221,5 +237,5 @@ fi
 echo
 log "Done. New watcher: $NEW_WATCHER_IP"
 warn "Housekeeping (not urgent, see WATCHER-REPLACEMENT-GUIDE.md): the ETCD_INITIAL_CLUSTER"
-warn "string in /etc/default/etcd on the 4 PG nodes is now stale - harmless, but worth"
+warn "string in /etc/default/etcd on the PG nodes is now stale - harmless, but worth"
 warn "refreshing next time you touch those files, in case one ever needs a from-scratch rebuild."

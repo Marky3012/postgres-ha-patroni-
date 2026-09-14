@@ -95,7 +95,7 @@ systemctl enable systemd-timesyncd >/dev/null 2>&1 || true
 systemctl restart systemd-timesyncd >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
-# etcd (every node: 4 PG nodes + watcher)
+# etcd (every node: all PG nodes + any watcher node(s))
 # ---------------------------------------------------------------------------
 if command -v etcd >/dev/null 2>&1; then
   log "etcd already installed"
